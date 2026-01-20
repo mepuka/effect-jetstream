@@ -1,0 +1,50 @@
+{
+  "name": "effect-jetstream",
+  "version": "1.0.0",
+  "description": "Effect-based client for the Bluesky Jetstream API",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mepuka/effect-jetstream.git"
+  },
+  "keywords": [
+    "bluesky",
+    "jetstream",
+    "effect",
+    "atprotocol",
+    "websocket",
+    "streaming"
+  ],
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepare": "effect-language-service patch",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build"
+  },
+  "devDependencies": {
+    "@effect/language-service": "^0.71.0",
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@effect/platform": "^0.94.1",
+    "effect": "^3.19.14"
+  }
+}
