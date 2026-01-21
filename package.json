@@ -1,6 +1,6 @@
 {
   "name": "effect-jetstream",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Effect-based client for the Bluesky Jetstream API",
   "license": "MIT",
   "repository": {
