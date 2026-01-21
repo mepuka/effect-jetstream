@@ -28,7 +28,7 @@ const Commit = Schema.Struct({
 
 const Identity = Schema.Struct({
   did: Did,
-  handle: Schema.String,
+  handle: Schema.optional(Schema.String),
   seq: Schema.Number,
   time: Schema.String
 })

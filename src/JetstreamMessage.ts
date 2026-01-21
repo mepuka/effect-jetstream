@@ -66,7 +66,7 @@ export class IdentityEvent extends Schema.TaggedClass<IdentityEvent>()("Identity
   kind: Schema.Literal("identity"),
   identity: Schema.Struct({
     did: Did,
-    handle: Schema.String,
+    handle: Schema.optional(Schema.String),
     seq: Schema.Number,
     time: Schema.String
   })

@@ -79,6 +79,26 @@ describe("decoder", () => {
     }
   })
 
+  test("decodes IdentityEvent without handle", async () => {
+    const raw = JSON.stringify({
+      did: "did:plc:hslv64eax7d2lwrm7qtg44ud",
+      time_us: 17374587134000000,
+      kind: "identity",
+      identity: {
+        did: "did:plc:hslv64eax7d2lwrm7qtg44ud",
+        seq: 17374587134,
+        time: "2026-01-21T12:45:41.876Z"
+      }
+    })
+
+    const result = await Effect.runPromise(decodeMessage(raw))
+
+    expect(result._tag).toBe("IdentityEvent")
+    if (result._tag === "IdentityEvent") {
+      expect(result.identity.handle).toBeUndefined()
+    }
+  })
+
   test("decodes AccountEvent", async () => {
     const raw = JSON.stringify({
       did: "did:plc:ufbl4k27gp6kzas5glhz7fim",
