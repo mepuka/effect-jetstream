@@ -85,7 +85,14 @@ export class AccountEvent extends Schema.TaggedClass<AccountEvent>()("AccountEve
     did: Did,
     seq: Schema.Number,
     time: Schema.String,
-    status: Schema.optional(Schema.Literal("deactivated", "suspended", "deleted"))
+    status: Schema.optional(Schema.Literal(
+      "takendown",
+      "suspended",
+      "deleted",
+      "deactivated",
+      "desynchronized",
+      "throttled"
+    ))
   })
 }) {}
 

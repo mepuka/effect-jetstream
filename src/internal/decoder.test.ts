@@ -100,6 +100,58 @@ describe("decoder", () => {
     }
   })
 
+  test("decodes AccountEvent with all status values", async () => {
+    const statuses = [
+      "takendown",
+      "suspended",
+      "deleted",
+      "deactivated",
+      "desynchronized",
+      "throttled"
+    ] as const
+
+    for (const status of statuses) {
+      const raw = JSON.stringify({
+        did: "did:plc:status",
+        time_us: 1725516665333808,
+        kind: "account",
+        account: {
+          active: false,
+          did: "did:plc:status",
+          seq: 1409753013,
+          time: "2024-09-05T06:11:04.870Z",
+          status
+        }
+      })
+
+      const result = await Effect.runPromise(decodeMessage(raw))
+
+      expect(result._tag).toBe("AccountEvent")
+      if (result._tag === "AccountEvent") {
+        expect(result.account.status).toBe(status)
+      }
+    }
+  })
+
+  test("fails on unknown account status", async () => {
+    const raw = JSON.stringify({
+      did: "did:plc:badstatus",
+      time_us: 1725516665333808,
+      kind: "account",
+      account: {
+        active: false,
+        did: "did:plc:badstatus",
+        seq: 1409753013,
+        time: "2024-09-05T06:11:04.870Z",
+        status: "shadowbanned"
+      }
+    })
+
+    const result = await Effect.runPromiseExit(decodeMessage(raw))
+
+    expect(result._tag).toBe("Failure")
+  })
+
   test("fails on invalid JSON", async () => {
     const result = await Effect.runPromiseExit(decodeMessage("not json"))
     
