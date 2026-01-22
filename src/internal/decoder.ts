@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema"
 import { Did } from "../BlueskyRecord.js"
 import type { JetstreamDecoder } from "../JetstreamConfig.js"
 import { ParseError } from "../JetstreamError.js"
+import { summarizeParseError } from "./parseError.js"
 import {
   AccountEvent,
   CommitCreate,
@@ -82,10 +83,12 @@ export const decodeMessage = (
     const text = yield* decodeText(data, decoder)
 
     const raw = yield* decodeRaw(text).pipe(
-      Effect.mapError((e) => new ParseError({
-        message: `Schema validation failed: ${e.message}`,
-        raw: text.slice(0, 200)
-      }))
+      Effect.mapError((e) =>
+        new ParseError({
+          message: `Schema validation failed: ${summarizeParseError(e)}`,
+          raw: text.slice(0, 200)
+        })
+      )
     )
 
     if (raw.kind === "commit") {

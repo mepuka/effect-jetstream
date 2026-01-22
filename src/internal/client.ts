@@ -27,6 +27,7 @@ import type {
   JetstreamMessage
 } from "../JetstreamMessage.js"
 import { tag as JetstreamTag, type Jetstream } from "./jetstream.js"
+import { summarizeParseError } from "./parseError.js"
 
 /**
  * @since 1.0.0
@@ -89,7 +90,7 @@ const decodeRecord = <C extends Collection>(
   const schema = recordSchemas[collection] as unknown as Schema.Schema<RecordFor<C>, any, never>
   return Schema.decodeUnknown(schema)(record).pipe(
     Effect.mapError((error) => new ParseError({
-      message: `Record schema validation failed for ${collection}: ${error.message}`
+      message: `Record schema validation failed for ${collection}: ${summarizeParseError(error)}`
     }))
   )
 }
