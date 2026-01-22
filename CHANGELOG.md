@@ -1,5 +1,11 @@
 # effect-jetstream
 
+## 1.0.3
+
+### Patch Changes
+
+- 8a263b2: Use ArrayFormatter summaries for schema decode errors to keep warning logs concise.
+
 ## 1.0.2
 
 ### Patch Changes
