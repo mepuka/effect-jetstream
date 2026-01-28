@@ -2,9 +2,11 @@
  * @since 1.0.0
  */
 import * as Socket from "@effect/platform/Socket"
+import * as Cause from "effect/Cause"
 import * as Context from "effect/Context"
 import * as Deferred from "effect/Deferred"
 import * as Effect from "effect/Effect"
+import * as Fiber from "effect/Fiber"
 import * as Layer from "effect/Layer"
 import * as Mailbox from "effect/Mailbox"
 import * as Option from "effect/Option"
@@ -40,6 +42,7 @@ export interface Jetstream {
   readonly stream: Stream.Stream<JetstreamMessage, JetstreamError>
   readonly send: (message: SubscriberSourcedMessage) => Effect.Effect<void, JetstreamError>
   readonly updateOptions: (options: OptionsUpdate) => Effect.Effect<void, JetstreamError>
+  readonly shutdown: Effect.Effect<void>
 }
 
 /**
@@ -90,6 +93,7 @@ export const layer = (
       const mailbox = yield* Mailbox.make<JetstreamMessage, JetstreamError>()
       const outbound = yield* Queue.bounded<OutboundMessage>(outboundBufferSize)
       const pending = yield* Ref.make<Option.Option<OutboundMessage>>(Option.none())
+      const shutdownSignal = yield* Deferred.make<void>()
       const decoder = resolveDecoder(config)
 
       if (config.compress && config.decoder === undefined) {
@@ -97,25 +101,6 @@ export const layer = (
           "Jetstream compression enabled without a custom decoder; using Bun.zstdDecompress without a dictionary."
         )
       }
-
-      const shutdown = Effect.gen(function* () {
-        const closed = new ConnectionError({
-          reason: "Closed",
-          cause: "Jetstream shutdown"
-        })
-        const pendingValue = yield* Ref.get(pending)
-        if (Option.isSome(pendingValue)) {
-          yield* Deferred.fail(pendingValue.value.done, closed)
-        }
-        const remaining = yield* Queue.takeAll(outbound)
-        for (const item of remaining) {
-          yield* Deferred.fail(item.done, closed)
-        }
-        yield* Queue.shutdown(outbound)
-        yield* mailbox.end
-      })
-
-      yield* Scope.addFinalizer(scope, shutdown)
 
       const logDecodeError = (error: ParseError) =>
         Effect.logWarning("Dropping malformed Jetstream message", {
@@ -178,15 +163,56 @@ export const layer = (
         Effect.retry(reconnectSchedule)
       )
 
-      yield* Effect.forkIn(runConnection, scope)
+      const runConnectionUntilShutdown = Effect.raceFirst(
+        runConnection,
+        Deferred.await(shutdownSignal)
+      ).pipe(
+        Effect.catchAllCause((cause) =>
+          Cause.isInterrupted(cause)
+            ? Effect.void
+            : Effect.failCause(cause)
+        )
+      )
+
+      const connectionFiber = yield* Effect.forkIn(runConnectionUntilShutdown, scope)
+
+      const shutdown = Effect.uninterruptible(
+        Effect.gen(function* () {
+          yield* Deferred.succeed(shutdownSignal, undefined)
+          yield* Fiber.interrupt(connectionFiber)
+          const closed = new ConnectionError({
+            reason: "Closed",
+            cause: "Jetstream shutdown"
+          })
+          const pendingValue = yield* Ref.get(pending)
+          if (Option.isSome(pendingValue)) {
+            yield* Deferred.fail(pendingValue.value.done, closed)
+            yield* Ref.set(pending, Option.none())
+          }
+          const remaining = yield* Queue.takeAll(outbound)
+          for (const item of remaining) {
+            yield* Deferred.fail(item.done, closed)
+          }
+          yield* mailbox.end
+        })
+      )
+
+      yield* Scope.addFinalizer(scope, shutdown)
 
       const send = Effect.fn("Jetstream.send")(
         (message: SubscriberSourcedMessage): Effect.Effect<void, JetstreamError> =>
           Effect.gen(function* () {
+            const isShutdown = yield* Deferred.isDone(shutdownSignal)
+            if (isShutdown) {
+              return yield* Effect.fail(new ConnectionError({ reason: "Closed", cause: "Jetstream shutdown" }))
+            }
             const done = yield* Deferred.make<void, JetstreamError>()
-            const accepted = yield* Queue.offer(outbound, { message, done })
+            const accepted = yield* Effect.raceFirst(
+              Queue.offer(outbound, { message, done }),
+              Deferred.await(shutdownSignal).pipe(Effect.as(false))
+            )
             if (!accepted) {
-              return yield* Effect.fail(new ConnectionError({ reason: "Closed", cause: "Send queue shutdown" }))
+              return yield* Effect.fail(new ConnectionError({ reason: "Closed", cause: "Jetstream shutdown" }))
             }
             return yield* Deferred.await(done)
           })
@@ -201,7 +227,8 @@ export const layer = (
         [TypeId]: TypeId,
         stream: Mailbox.toStream(mailbox),
         send,
-        updateOptions
+        updateOptions,
+        shutdown
       })
     })
   )

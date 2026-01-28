@@ -31,6 +31,7 @@ export interface Jetstream {
   readonly stream: Stream.Stream<JetstreamMessage, JetstreamError>
   readonly send: (message: SubscriberSourcedMessage) => Effect.Effect<void, JetstreamError>
   readonly updateOptions: (options: OptionsUpdate) => Effect.Effect<void, JetstreamError>
+  readonly shutdown: Effect.Effect<void>
 }
 
 /**

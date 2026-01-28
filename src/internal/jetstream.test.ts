@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
+import * as Cause from "effect/Cause"
 import * as Chunk from "effect/Chunk"
 import * as Effect from "effect/Effect"
+import * as Exit from "effect/Exit"
 import * as Fiber from "effect/Fiber"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
@@ -103,5 +105,66 @@ describe("jetstream", () => {
     expect(result.pendingAfterError).toBe(true)
     expect(result.sent1).toBe(0)
     expect(result.sent2).toBe(1)
+  })
+
+  test("shutdown ends the stream", async () => {
+    const config = JetstreamConfig.make({})
+    const program = Effect.gen(function* () {
+      const jetstream = yield* JetstreamTag
+      const factory = yield* FakeWebSocketFactory
+      const streamFiber = yield* jetstream.stream.pipe(
+        Stream.runCollect,
+        Effect.fork
+      )
+      const socket = yield* factory.take
+      socket.open()
+      yield* jetstream.shutdown
+      const messages = yield* Fiber.join(streamFiber)
+      return Chunk.toReadonlyArray(messages)
+    }).pipe(Effect.provide(makeLayer(config)))
+
+    const messages = await Effect.runPromise(program)
+    expect(messages).toHaveLength(0)
+  })
+
+  test("shutdown stops reconnect attempts", async () => {
+    const config = JetstreamConfig.make({})
+    const program = Effect.gen(function* () {
+      const jetstream = yield* JetstreamTag
+      const factory = yield* FakeWebSocketFactory
+      const socket1 = yield* factory.take
+      socket1.emitError(new Error("boom"))
+      yield* jetstream.shutdown
+      yield* TestClock.adjust("1 second")
+      const sockets = yield* factory.takeAll
+      return Chunk.toReadonlyArray(sockets)
+    }).pipe(Effect.provide(makeLayer(config)))
+
+    const sockets = await Effect.runPromise(program)
+    expect(sockets).toHaveLength(0)
+  })
+
+  test("shutdown fails pending sends", async () => {
+    const config = JetstreamConfig.make({})
+    const program = Effect.gen(function* () {
+      const jetstream = yield* JetstreamTag
+      const factory = yield* FakeWebSocketFactory
+      const sendFiber = yield* jetstream.send({
+        type: "options_update",
+        payload: { wantedCollections: ["app.bsky.feed.post"] }
+      }).pipe(Effect.fork)
+      yield* factory.take
+      const pendingBeforeShutdown = Option.isNone(yield* Fiber.poll(sendFiber))
+      yield* jetstream.shutdown
+      const exit = yield* Fiber.await(sendFiber)
+      return { pendingBeforeShutdown, exit }
+    }).pipe(Effect.provide(makeLayer(config)))
+
+    const result = await Effect.runPromise(program)
+    expect(result.pendingBeforeShutdown).toBe(true)
+    expect(Exit.isFailure(result.exit)).toBe(true)
+    const error = Option.getOrUndefined(Cause.failureOption(result.exit.cause))
+    expect(error?._tag).toBe("ConnectionError")
+    expect(error?.cause).toBe("Jetstream shutdown")
   })
 })

@@ -141,6 +141,9 @@ interface Jetstream {
   
   // Update subscription options
   readonly updateOptions: (options: OptionsUpdate) => Effect<void, JetstreamError>
+
+  // Gracefully close the connection and end the stream
+  readonly shutdown: Effect<void>
 }
 ```
 
