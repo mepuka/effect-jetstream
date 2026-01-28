@@ -1,5 +1,11 @@
 # effect-jetstream
 
+## 1.0.4
+
+### Patch Changes
+
+- 55997b3: Add Jetstream shutdown for graceful connection termination and stop reconnect loops on shutdown.
+
 ## 1.0.3
 
 ### Patch Changes
