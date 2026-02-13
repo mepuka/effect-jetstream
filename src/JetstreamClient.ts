@@ -43,7 +43,8 @@ export interface JetstreamClient {
     kind: K,
     handler: (event: EventFor<K>) => Effect.Effect<void>
   ) => Effect.Effect<void>
-  readonly run: Effect.Effect<never, JetstreamError>
+  readonly run: Effect.Effect<void, JetstreamError>
+  readonly runForever: Effect.Effect<never, JetstreamError>
 }
 
 /**

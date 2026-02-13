@@ -13,13 +13,21 @@ import * as Option from "effect/Option"
 import * as Queue from "effect/Queue"
 import * as Ref from "effect/Ref"
 import * as Schedule from "effect/Schedule"
+import * as Schema from "effect/Schema"
 import * as Scope from "effect/Scope"
 import * as Stream from "effect/Stream"
-import type { JetstreamConfig, JetstreamDecoder, OptionsUpdate, SubscriberSourcedMessage } from "../JetstreamConfig.js"
+import type {
+  JetstreamConfig,
+  JetstreamDecoder,
+  JetstreamRuntimeEvent,
+  OptionsUpdate,
+  SubscriberSourcedMessage
+} from "../JetstreamConfig.js"
 import { ConnectionError, ParseError, type JetstreamError } from "../JetstreamError.js"
 import type { JetstreamMessage } from "../JetstreamMessage.js"
 import { decodeMessage } from "./decoder.js"
-import { buildUrl } from "./websocket.js"
+import { summarizeParseError } from "./parseError.js"
+import { buildUrl, createSocket } from "./websocket.js"
 
 /**
  * @since 1.0.0
@@ -62,20 +70,65 @@ type OutboundMessage = {
   readonly done: Deferred.Deferred<void, JetstreamError>
 }
 
-const defaultZstdDecoder: JetstreamDecoder = (data) =>
-  Effect.tryPromise({
-    try: () => Bun.zstdDecompress(data),
-    catch: (error) =>
-      new ParseError({
-        message: `Zstd decompression failed: ${String(error)}`
-      })
-  })
+const OptionsUpdateSchema = Schema.Struct({
+  wantedCollections: Schema.optional(Schema.Array(Schema.String)),
+  wantedDids: Schema.optional(Schema.Array(Schema.String)),
+  maxMessageSizeBytes: Schema.optional(Schema.Number)
+})
 
-const resolveDecoder = (config: JetstreamConfig): JetstreamDecoder | undefined => {
+const SubscriberSourcedMessageSchema = Schema.Struct({
+  type: Schema.Literal("options_update"),
+  payload: OptionsUpdateSchema
+})
+
+const encodeOutboundMessage = Schema.encode(
+  Schema.parseJson(SubscriberSourcedMessageSchema)
+)
+
+type BunRuntime = {
+  readonly zstdDecompress?: (data: Uint8Array) => Uint8Array | PromiseLike<Uint8Array>
+}
+
+type ResolvedDecoder = {
+  readonly decoder: JetstreamDecoder | undefined
+  readonly usingDefaultDecoder: boolean
+}
+
+const makeDefaultZstdDecoder = (
+  zstdDecompress: NonNullable<BunRuntime["zstdDecompress"]>
+): JetstreamDecoder =>
+  (data) =>
+    Effect.tryPromise({
+      try: () => Promise.resolve(zstdDecompress(data)),
+      catch: (error) =>
+        new ParseError({
+          message: `Zstd decompression failed: ${String(error)}`
+        })
+    })
+
+const resolveDecoder = (config: JetstreamConfig): Effect.Effect<ResolvedDecoder, ParseError> => {
   if (!config.compress) {
-    return undefined
+    return Effect.succeed({
+      decoder: undefined,
+      usingDefaultDecoder: false
+    })
   }
-  return config.decoder ?? defaultZstdDecoder
+  if (config.decoder !== undefined) {
+    return Effect.succeed({
+      decoder: config.decoder,
+      usingDefaultDecoder: false
+    })
+  }
+  const bunRuntime = (globalThis as { readonly Bun?: BunRuntime }).Bun
+  if (bunRuntime?.zstdDecompress !== undefined) {
+    return Effect.succeed({
+      decoder: makeDefaultZstdDecoder(bunRuntime.zstdDecompress),
+      usingDefaultDecoder: true
+    })
+  }
+  return Effect.fail(new ParseError({
+    message: "Jetstream compression requires a custom decoder when Bun.zstdDecompress is unavailable."
+  }))
 }
 
 /**
@@ -88,31 +141,72 @@ export const layer = (
   Layer.scoped(
     tag,
     Effect.gen(function* () {
-      const url = buildUrl(config)
+      const url = yield* buildUrl(config)
       const scope = yield* Effect.scope
-      const mailbox = yield* Mailbox.make<JetstreamMessage, JetstreamError>()
+      const mailbox = yield* Mailbox.make<JetstreamMessage, JetstreamError>({
+        capacity: config.inboundBufferSize,
+        strategy: config.inboundBufferStrategy
+      })
       const outbound = yield* Queue.bounded<OutboundMessage>(outboundBufferSize)
       const pending = yield* Ref.make<Option.Option<OutboundMessage>>(Option.none())
       const shutdownSignal = yield* Deferred.make<void>()
-      const decoder = resolveDecoder(config)
+      const { decoder, usingDefaultDecoder } = yield* resolveDecoder(config)
+      const now = () => Date.now()
+      const emitRuntimeEvent = Effect.fn("Jetstream.emitRuntimeEvent")(
+        (event: JetstreamRuntimeEvent): Effect.Effect<void> =>
+          config.runtimeObserver === undefined
+            ? Effect.void
+            : config.runtimeObserver(event).pipe(
+              Effect.catchAllCause(() => Effect.void),
+              Effect.forkDaemon,
+              Effect.asVoid
+            )
+      )
 
-      if (config.compress && config.decoder === undefined) {
+      if (usingDefaultDecoder) {
         yield* Effect.logWarning(
           "Jetstream compression enabled without a custom decoder; using Bun.zstdDecompress without a dictionary."
         )
       }
 
       const logDecodeError = (error: ParseError) =>
-        Effect.logWarning("Dropping malformed Jetstream message", {
-          message: error.message,
-          raw: error.raw
-        })
+        emitRuntimeEvent({
+          _tag: "DecodeFailed",
+          timestampMs: now(),
+          message: error.message
+        }).pipe(
+          Effect.zipRight(
+            Effect.logWarning("Dropping malformed Jetstream message", {
+              message: error.message,
+              raw: error.raw
+            })
+          )
+        )
 
       const handleIncoming = Effect.fn("Jetstream.handleIncoming")(
         (data: string | Uint8Array) =>
           decodeMessage(data, decoder).pipe(
-            Effect.flatMap((message) => mailbox.offer(message)),
-            Effect.asVoid,
+            Effect.flatMap((message) =>
+              mailbox.offer(message).pipe(
+                Effect.flatMap((accepted) =>
+                  accepted
+                    ? Effect.void
+                    : emitRuntimeEvent({
+                      _tag: "InboundDropped",
+                      timestampMs: now(),
+                      kind: message.kind,
+                      did: message.did
+                    }).pipe(
+                      Effect.zipRight(
+                        Effect.logDebug("Dropping Jetstream message because inbound buffer is full", {
+                          kind: message.kind,
+                          did: message.did
+                        })
+                      )
+                    )
+                )
+              )
+            ),
             Effect.catchAll(logDecodeError)
           )
       )
@@ -137,9 +231,36 @@ export const layer = (
       const writeOne = (writer: (chunk: Uint8Array | string | Socket.CloseEvent) => Effect.Effect<void, Socket.SocketError>) =>
         Effect.gen(function* () {
           const next = yield* takeNextOutbound
-          yield* writer(JSON.stringify(next.message)).pipe(
+          const encoded = yield* encodeOutboundMessage(next.message).pipe(
+            Effect.mapError((error) =>
+              new ParseError({
+                message: `Failed to serialize outbound message: ${summarizeParseError(error)}`
+              })
+            ),
+            Effect.catchAll((error) =>
+              Effect.gen(function* () {
+                yield* emitRuntimeEvent({
+                  _tag: "OutboundEncodeFailed",
+                  timestampMs: now(),
+                  message: error.message
+                })
+                yield* Ref.set(pending, Option.none())
+                yield* Deferred.fail(next.done, error)
+                return yield* Effect.fail(error)
+              })
+            )
+          )
+          yield* emitRuntimeEvent({
+            _tag: "OutboundEncoded",
+            timestampMs: now()
+          })
+          yield* writer(encoded).pipe(
             Effect.mapError((cause) => new ConnectionError({ reason: "Closed", cause }))
           )
+          yield* emitRuntimeEvent({
+            _tag: "OutboundSent",
+            timestampMs: now()
+          })
           yield* Ref.set(pending, Option.none())
           yield* Deferred.succeed(next.done, undefined)
         })
@@ -155,11 +276,31 @@ export const layer = (
 
       const runConnection = Effect.scoped(
         Effect.gen(function* () {
-          const socket = yield* Socket.makeWebSocket(url)
+          yield* emitRuntimeEvent({
+            _tag: "ConnectionAttempt",
+            timestampMs: now(),
+            url
+          })
+          const socket = yield* createSocket(url)
+          yield* emitRuntimeEvent({
+            _tag: "ConnectionOpened",
+            timestampMs: now(),
+            url
+          })
           const writer = yield* socket.writer
           yield* Effect.raceFirst(readLoop(socket), writeLoop(writer))
         })
       ).pipe(
+        Effect.tapError((error) =>
+          error._tag === "ConnectionError"
+            ? emitRuntimeEvent({
+              _tag: "ConnectionClosed",
+              timestampMs: now(),
+              reason: error.reason,
+              ...(error.cause === undefined ? {} : { cause: error.cause })
+            })
+            : Effect.void
+        ),
         Effect.retry(reconnectSchedule)
       )
 
@@ -178,6 +319,10 @@ export const layer = (
 
       const shutdown = Effect.uninterruptible(
         Effect.gen(function* () {
+          yield* emitRuntimeEvent({
+            _tag: "Shutdown",
+            timestampMs: now()
+          })
           yield* Deferred.succeed(shutdownSignal, undefined)
           yield* Fiber.interrupt(connectionFiber)
           const closed = new ConnectionError({
@@ -214,6 +359,10 @@ export const layer = (
             if (!accepted) {
               return yield* Effect.fail(new ConnectionError({ reason: "Closed", cause: "Jetstream shutdown" }))
             }
+            yield* emitRuntimeEvent({
+              _tag: "OutboundQueued",
+              timestampMs: now()
+            })
             return yield* Deferred.await(done)
           })
       )

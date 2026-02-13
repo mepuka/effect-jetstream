@@ -63,7 +63,8 @@ export interface JetstreamClient {
     kind: K,
     handler: (event: EventFor<K>) => Effect.Effect<void>
   ) => Effect.Effect<void>
-  readonly run: Effect.Effect<never, JetstreamError>
+  readonly run: Effect.Effect<void, JetstreamError>
+  readonly runForever: Effect.Effect<never, JetstreamError>
 }
 
 /**
@@ -229,10 +230,8 @@ export const layer: Layer.Layer<JetstreamClient, never, Jetstream> = Layer.effec
         )
     )
 
-    const run = jetstream.stream.pipe(
-      Stream.runForEach(dispatchEvent),
-      Effect.zipRight(Effect.never)
-    )
+    const run = jetstream.stream.pipe(Stream.runForEach(dispatchEvent))
+    const runForever = run.pipe(Effect.zipRight(Effect.never))
 
     return tag.of({
       [TypeId]: TypeId,
@@ -240,7 +239,8 @@ export const layer: Layer.Layer<JetstreamClient, never, Jetstream> = Layer.effec
       onUpdate,
       onDelete,
       on,
-      run
+      run,
+      runForever
     })
   })
 )

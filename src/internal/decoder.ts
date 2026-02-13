@@ -107,7 +107,7 @@ export const decodeMessage = (
 
       switch (commit.operation) {
         case "create":
-          if (commit.record === undefined) {
+          if (commit.record == null) {
             return yield* Effect.fail(new ParseError({
               message: "Missing record for commit create",
               raw: text.slice(0, 200)
@@ -125,7 +125,7 @@ export const decodeMessage = (
             }
           })
         case "update":
-          if (commit.record === undefined) {
+          if (commit.record == null) {
             return yield* Effect.fail(new ParseError({
               message: "Missing record for commit update",
               raw: text.slice(0, 200)

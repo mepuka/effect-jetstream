@@ -96,12 +96,20 @@ JetstreamConfig.JetstreamConfig.make({
   compress: false,
   
   // Optional decoder for compressed payloads
-  // If omitted, Bun.zstdDecompress is used without a dictionary and a warning is logged.
+  // If omitted in Bun, Bun.zstdDecompress is used without a dictionary and a warning is logged.
+  // In non-Bun runtimes, a decoder is required when compress=true.
   // decoder: (data) => Effect.tryPromise(() => Bun.zstdDecompress(data))
+
+  // Inbound message buffering
+  inboundBufferSize: 4096,
+  inboundBufferStrategy: "suspend", // "suspend" | "dropping" | "sliding"
+
+  // Optional runtime observer for instrumentation
+  runtimeObserver: (event) => Effect.logDebug("jetstream-runtime", event)
 })
 ```
 
-When `compress` is true, provide a decoder that understands Jetstream's dictionary. If you omit it, the client falls back to `Bun.zstdDecompress` without a dictionary and logs a warning.
+When `compress` is true, provide a decoder that understands Jetstream's dictionary. If you omit it, the client falls back to `Bun.zstdDecompress` only in Bun and logs a warning. In runtimes without Bun, layer construction fails with a typed `ParseError`.
 
 ## Behavior
 
@@ -175,10 +183,47 @@ interface JetstreamClient {
     handler: (event: EventFor<K>) => Effect<void>
   ) => Effect<void>
   
-  // Run the client (blocks forever)
-  readonly run: Effect<never, JetstreamError>
+  // Run the client until the stream ends (e.g. on shutdown)
+  readonly run: Effect<void, JetstreamError>
+
+  // Run the client forever
+  readonly runForever: Effect<never, JetstreamError>
 }
 ```
+
+## Local Harness
+
+The repository includes a local Bun harness for smoke/performance testing with Effect metrics.
+
+### Commands
+
+```bash
+bun run harness
+bun run harness:live
+bun run harness:replay
+```
+
+### Modes
+
+- `live`: connects to Jetstream and tracks throughput/runtime signals.
+- `replay`: replays NDJSON fixture messages (default fixture: `examples/fixtures/jetstream-sample.ndjson`).
+
+### Useful Flags
+
+```bash
+bun run harness --mode replay --durationSec 30 --reportEverySec 5 --replayRatePerSec 200
+bun run harness --mode live --collections app.bsky.feed.post --jsonOut tmp/live-report.json
+```
+
+Optional gate flags fail the run (`exit 1`) when violated:
+
+- `--gateMinEventsPerSec`
+- `--gateMaxDecodeErrors`
+- `--gateMaxInboundDrops`
+- `--gateMaxReconnects`
+- `--gateMaxP95LagMs`
+
+The harness prints periodic summaries and writes a final JSON report (`tmp/harness-report.json` by default).
 
 ## License
 

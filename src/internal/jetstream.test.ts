@@ -8,7 +8,7 @@ import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import * as Stream from "effect/Stream"
 import * as TestClock from "effect/TestClock"
-import { JetstreamConfig } from "../JetstreamConfig.js"
+import { JetstreamConfig, type JetstreamRuntimeEvent } from "../JetstreamConfig.js"
 import { FakeWebSocketFactory, testLayer as fakeWebSocketLayer } from "./test/FakeWebSocket.js"
 import { tag as JetstreamTag, layer as jetstreamLayer } from "./jetstream.js"
 
@@ -19,6 +19,18 @@ const makeLayer = (config: JetstreamConfig) => {
     jetstreamLayer(config).pipe(Layer.provide(wsLayer))
   ] as const
 }
+
+const commitDeleteMessage = JSON.stringify({
+  did: "did:plc:abc123",
+  time_us: 1,
+  kind: "commit",
+  commit: {
+    rev: "1",
+    operation: "delete",
+    collection: "app.bsky.feed.post",
+    rkey: "r1"
+  }
+})
 
 describe("jetstream", () => {
   test("drops malformed messages and continues", async () => {
@@ -166,5 +178,151 @@ describe("jetstream", () => {
     const error = Option.getOrUndefined(Cause.failureOption(result.exit.cause))
     expect(error?._tag).toBe("ConnectionError")
     expect(error?.cause).toBe("Jetstream shutdown")
+  })
+
+  test("fails with ConnectionError for invalid endpoint", async () => {
+    const config = JetstreamConfig.make({
+      endpoint: "not a url"
+    })
+    const program = Effect.gen(function* () {
+      return yield* JetstreamTag
+    }).pipe(Effect.provide(makeLayer(config)))
+
+    const exit = await Effect.runPromiseExit(program)
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const error = Option.getOrUndefined(Cause.failureOption(exit.cause))
+      expect(error?._tag).toBe("ConnectionError")
+      if (error?._tag === "ConnectionError") {
+        expect(error.reason).toBe("Connect")
+      }
+    }
+  })
+
+  test("fails send when outbound encoding fails", async () => {
+    const config = JetstreamConfig.make({})
+    const program = Effect.gen(function* () {
+      const jetstream = yield* JetstreamTag
+      const factory = yield* FakeWebSocketFactory
+
+      const sendFiber = yield* jetstream.send({
+        type: "options_update",
+        payload: {
+          wantedCollections: [1]
+        } as any
+      } as any).pipe(Effect.fork)
+
+      const socket = yield* factory.take
+      socket.open()
+
+      const exit = yield* Fiber.await(sendFiber)
+      return exit
+    }).pipe(Effect.provide(makeLayer(config)))
+
+    const exit = await Effect.runPromise(program)
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const error = Option.getOrUndefined(Cause.failureOption(exit.cause))
+      expect(error?._tag).toBe("ParseError")
+    }
+  })
+
+  test("emits DecodeFailed runtime events", async () => {
+    const events: Array<JetstreamRuntimeEvent> = []
+    const config = JetstreamConfig.make({
+      runtimeObserver: (event) => Effect.sync(() => {
+        events.push(event)
+      })
+    })
+    const program = Effect.gen(function* () {
+      const jetstream = yield* JetstreamTag
+      const factory = yield* FakeWebSocketFactory
+      const socket = yield* factory.take
+      socket.open()
+      socket.emitMessage("not json")
+      yield* Effect.yieldNow()
+      yield* Effect.yieldNow()
+      yield* jetstream.shutdown
+      return events
+    }).pipe(Effect.provide(makeLayer(config)))
+
+    const runtimeEvents = await Effect.runPromise(program)
+    expect(runtimeEvents.some((event) => event._tag === "DecodeFailed")).toBe(true)
+  })
+
+  test("emits InboundDropped runtime events when buffer is full", async () => {
+    const events: Array<JetstreamRuntimeEvent> = []
+    const config = JetstreamConfig.make({
+      inboundBufferSize: 1,
+      inboundBufferStrategy: "dropping",
+      runtimeObserver: (event) => Effect.sync(() => {
+        events.push(event)
+      })
+    })
+    const program = Effect.gen(function* () {
+      const jetstream = yield* JetstreamTag
+      const factory = yield* FakeWebSocketFactory
+      const socket = yield* factory.take
+      socket.open()
+      socket.emitMessage(commitDeleteMessage)
+      socket.emitMessage(commitDeleteMessage)
+      yield* Effect.yieldNow()
+      yield* Effect.yieldNow()
+      yield* jetstream.shutdown
+      return events
+    }).pipe(Effect.provide(makeLayer(config)))
+
+    const runtimeEvents = await Effect.runPromise(program)
+    expect(runtimeEvents.some((event) => event._tag === "InboundDropped")).toBe(true)
+  })
+
+  test("emits ConnectionAttempt and ConnectionClosed runtime events", async () => {
+    const events: Array<JetstreamRuntimeEvent> = []
+    const config = JetstreamConfig.make({
+      runtimeObserver: (event) => Effect.sync(() => {
+        events.push(event)
+      })
+    })
+    const program = Effect.gen(function* () {
+      const jetstream = yield* JetstreamTag
+      const factory = yield* FakeWebSocketFactory
+      const socket1 = yield* factory.take
+      socket1.emitError(new Error("boom"))
+      yield* TestClock.adjust("1 second")
+      yield* factory.take
+      yield* Effect.yieldNow()
+      yield* Effect.yieldNow()
+      yield* jetstream.shutdown
+      return events
+    }).pipe(Effect.provide(makeLayer(config)))
+
+    const runtimeEvents = await Effect.runPromise(program)
+    expect(runtimeEvents.some((event) => event._tag === "ConnectionAttempt")).toBe(true)
+    expect(runtimeEvents.some((event) => event._tag === "ConnectionClosed")).toBe(true)
+  })
+
+  test("observer defects do not stop stream processing", async () => {
+    const config = JetstreamConfig.make({
+      runtimeObserver: () => Effect.die("observer boom")
+    })
+    const program = Effect.gen(function* () {
+      const jetstream = yield* JetstreamTag
+      const factory = yield* FakeWebSocketFactory
+      const streamFiber = yield* jetstream.stream.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.fork
+      )
+      const socket = yield* factory.take
+      socket.open()
+      socket.emitMessage(commitDeleteMessage)
+      const messages = yield* Fiber.join(streamFiber)
+      yield* jetstream.shutdown
+      return Chunk.toReadonlyArray(messages)
+    }).pipe(Effect.provide(makeLayer(config)))
+
+    const messages = await Effect.runPromise(program)
+    expect(messages).toHaveLength(1)
+    expect(messages[0]?._tag).toBe("CommitDelete")
   })
 })

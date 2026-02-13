@@ -7,31 +7,39 @@ import * as Stream from "effect/Stream"
 import { ConnectionError } from "../JetstreamError.js"
 import type { JetstreamConfig } from "../JetstreamConfig.js"
 
-export const buildUrl = (config: JetstreamConfig): string => {
-  const url = new URL(config.endpoint)
-  
-  for (const collection of config.wantedCollections) {
-    url.searchParams.append("wantedCollections", collection)
-  }
-  
-  for (const did of config.wantedDids) {
-    url.searchParams.append("wantedDids", did)
-  }
-  
-  if (config.cursor !== undefined) {
-    url.searchParams.set("cursor", config.cursor.toString())
-  }
-  
-  if (config.maxMessageSizeBytes !== undefined) {
-    url.searchParams.set("maxMessageSizeBytes", config.maxMessageSizeBytes.toString())
-  }
-  
-  if (config.compress) {
-    url.searchParams.set("compress", "true")
-  }
-  
-  return url.toString()
-}
+export const buildUrl = (config: JetstreamConfig): Effect.Effect<string, ConnectionError> =>
+  Effect.try({
+    try: () => {
+      const url = new URL(config.endpoint)
+
+      for (const collection of config.wantedCollections) {
+        url.searchParams.append("wantedCollections", collection)
+      }
+
+      for (const did of config.wantedDids) {
+        url.searchParams.append("wantedDids", did)
+      }
+
+      if (config.cursor !== undefined) {
+        url.searchParams.set("cursor", config.cursor.toString())
+      }
+
+      if (config.maxMessageSizeBytes !== undefined) {
+        url.searchParams.set("maxMessageSizeBytes", config.maxMessageSizeBytes.toString())
+      }
+
+      if (config.compress) {
+        url.searchParams.set("compress", "true")
+      }
+
+      return url.toString()
+    },
+    catch: (cause) =>
+      new ConnectionError({
+        reason: "Connect",
+        cause
+      })
+  })
 
 export const createSocket = (
   url: string

@@ -172,6 +172,25 @@ describe("decoder", () => {
     expect(result._tag).toBe("Failure")
   })
 
+  test("fails when commit create record is null", async () => {
+    const raw = JSON.stringify({
+      did: "did:plc:nullrecord",
+      time_us: 1725911162329308,
+      kind: "commit",
+      commit: {
+        rev: "3l3qo2vutsw2b",
+        operation: "create",
+        collection: "app.bsky.feed.post",
+        rkey: "3l3qo2vuowo2b",
+        record: null
+      }
+    })
+
+    const result = await Effect.runPromiseExit(decodeMessage(raw))
+
+    expect(result._tag).toBe("Failure")
+  })
+
   test("fails on invalid JSON", async () => {
     const result = await Effect.runPromiseExit(decodeMessage("not json"))
     
