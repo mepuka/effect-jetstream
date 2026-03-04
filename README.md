@@ -104,6 +104,21 @@ JetstreamConfig.JetstreamConfig.make({
   inboundBufferSize: 4096,
   inboundBufferStrategy: "suspend", // "suspend" | "dropping" | "sliding"
 
+  // Raw ingress buffering (applies before decode)
+  ingressBufferSize: 4096,
+  ingressBufferStrategy: "dropping", // "suspend" | "dropping" | "sliding"
+
+  // Outbound message buffering
+  outboundBufferSize: 1024,
+
+  // Reconnect backoff tuning
+  reconnectBaseDelayMs: 1000,
+  reconnectMaxDelayMs: 30000,
+  reconnectJitterFactor: 0, // 0..1 (0 disables jitter)
+
+  // Runtime observer queue buffering
+  runtimeObserverBufferSize: 1024,
+
   // Optional runtime observer for instrumentation
   runtimeObserver: (event) => Effect.logDebug("jetstream-runtime", event)
 })
@@ -114,9 +129,11 @@ When `compress` is true, provide a decoder that understands Jetstream's dictiona
 ## Behavior
 
 - Malformed messages are logged and dropped; the stream continues.
+- Raw inbound frames are buffered before decode and may be dropped when ingress is saturated.
 - Record decode failures in `JetstreamClient` are logged and dropped.
 - Handler failures are logged and do not stop processing.
 - Outbound messages are buffered; `send` waits for a ready socket and resends after reconnect.
+- Reconnect backoff uses exponential delay capped by `reconnectMaxDelayMs`, with optional jitter.
 
 ## Event Types
 
@@ -201,6 +218,10 @@ The repository includes a local Bun harness for smoke/performance testing with E
 bun run harness
 bun run harness:live
 bun run harness:replay
+bun run bench:replay
+bun run bench:ci
+bun run bench:matrix
+bun run bench:matrix:quick
 ```
 
 ### Modes
@@ -222,8 +243,15 @@ Optional gate flags fail the run (`exit 1`) when violated:
 - `--gateMaxInboundDrops`
 - `--gateMaxReconnects`
 - `--gateMaxP95LagMs`
+- `--gateMaxP99LagMs`
 
 The harness prints periodic summaries and writes a final JSON report (`tmp/harness-report.json` by default).
+
+`bench:matrix` runs a baseline matrix across decode-only, replay, and websocket-pipeline scenarios, executes warmup + measured trials, and writes summary artifacts to `tmp/benchmarks/<run-id>/`:
+
+- `matrix-summary.json` for machine-readable baselines
+- `matrix-summary.md` for quick comparison tables
+- `reports/*.json` for per-trial raw results
 
 ## License
 

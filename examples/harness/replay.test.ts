@@ -29,6 +29,8 @@ describe("harness replay", () => {
     expect(report.totals.events).toBeGreaterThan(0)
     expect(report.rates.avgEventsPerSec).toBeGreaterThan(0)
     expect(report.totals.decodeErrors).toBe(0)
+    expect(report.totals.mailboxDrops).toBe(0)
+    expect(report.totals.ingressDrops).toBe(0)
   })
 
   test("replay mode counts decode failures from malformed lines", async () => {

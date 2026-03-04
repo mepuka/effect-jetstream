@@ -20,6 +20,56 @@ const makeLayer = (config: JetstreamConfig) => {
 }
 
 describe("jetstream client", () => {
+  test("reuses decoded create event across handlers for same collection", async () => {
+    const config = JetstreamConfig.make({})
+    const program = Effect.gen(function* () {
+      const client = yield* JetstreamClientTag
+      const jetstream = yield* JetstreamTag
+      const factory = yield* FakeWebSocketFactory
+      const seen: Array<unknown> = []
+
+      yield* client.onCreate("app.bsky.feed.post", (event) =>
+        Effect.sync(() => {
+          seen.push(event)
+        })
+      )
+      yield* client.onCreate("app.bsky.feed.post", (event) =>
+        Effect.sync(() => {
+          seen.push(event)
+        })
+      )
+
+      const runFiber = yield* client.run.pipe(Effect.fork)
+      const socket = yield* factory.take
+      socket.open()
+      socket.emitMessage(JSON.stringify({
+        did: "did:plc:abc123",
+        time_us: 1725911162329308,
+        kind: "commit",
+        commit: {
+          rev: "3l3qo2vutsw2b",
+          operation: "create",
+          collection: "app.bsky.feed.post",
+          rkey: "3l3qo2vuowo2b",
+          record: {
+            $type: "app.bsky.feed.post",
+            text: "hello",
+            createdAt: "2024-09-09T19:46:02.102Z"
+          }
+        }
+      }))
+      yield* Effect.yieldNow()
+      yield* Effect.yieldNow()
+      yield* jetstream.shutdown
+      yield* Fiber.join(runFiber)
+      return seen
+    }).pipe(Effect.provide(makeLayer(config)))
+
+    const seen = await Effect.runPromise(program)
+    expect(seen).toHaveLength(2)
+    expect(seen[0]).toBe(seen[1])
+  })
+
   test("run completes when stream shuts down", async () => {
     const config = JetstreamConfig.make({})
     const program = Effect.gen(function* () {

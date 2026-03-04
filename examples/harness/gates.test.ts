@@ -13,6 +13,8 @@ const baseReport: HarnessReport = {
     events: 600,
     decodeErrors: 1,
     inboundDrops: 2,
+    mailboxDrops: 1,
+    ingressDrops: 1,
     reconnects: 3,
     outboundEncodeFailures: 0,
     outboundSendFailures: 0
@@ -49,13 +51,14 @@ describe("harness gates", () => {
       gateMaxDecodeErrors: 0,
       gateMaxInboundDrops: 1,
       gateMaxReconnects: 2,
-      gateMaxP95LagMs: 120
+      gateMaxP95LagMs: 120,
+      gateMaxP99LagMs: 250
     })
     const result = evaluateGates(baseReport, options)
 
     expect(result.configured).toBe(true)
     expect(result.passed).toBe(false)
-    expect(result.violations.length).toBe(5)
+    expect(result.violations.length).toBe(6)
   })
 
   test("passes when metrics are within thresholds", () => {
@@ -64,7 +67,8 @@ describe("harness gates", () => {
       gateMaxDecodeErrors: 2,
       gateMaxInboundDrops: 3,
       gateMaxReconnects: 4,
-      gateMaxP95LagMs: 200
+      gateMaxP95LagMs: 200,
+      gateMaxP99LagMs: 350
     })
     const result = evaluateGates(baseReport, options)
 

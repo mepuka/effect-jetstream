@@ -31,16 +31,23 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
+    "clean": "rm -rf dist",
+    "build": "bun run clean && tsc",
     "prepare": "effect-language-service patch",
     "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "check": "bun run typecheck && bun run test",
     "harness": "bun run examples/harness.ts",
     "harness:live": "bun run examples/harness.ts --mode live --durationSec 60 --reportEverySec 5",
     "harness:replay": "bun run examples/harness.ts --mode replay --durationSec 30 --replayFile examples/fixtures/jetstream-sample.ndjson",
+    "bench:replay": "bun run examples/harness.ts --mode replay --durationSec 60 --reportEverySec 5 --replayFile examples/fixtures/jetstream-sample.ndjson --jsonOut tmp/bench-replay.json",
+    "bench:ci": "bun run examples/harness.ts --mode replay --durationSec 20 --reportEverySec 5 --replayRatePerSec 500 --replayFile examples/fixtures/jetstream-sample.ndjson --jsonOut tmp/bench-ci.json",
+    "bench:matrix": "bun run examples/benchmark-matrix.ts",
+    "bench:matrix:quick": "bun run examples/benchmark-matrix.ts --trials 2 --warmupTrials 1 --durationSec 6 --rates 500",
     "prepublishOnly": "bun run build",
     "changeset": "changeset",
     "version": "changeset version",
-    "release": "bun run build && changeset publish"
+    "release": "bun run check && bun run build && changeset publish"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",

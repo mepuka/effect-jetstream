@@ -59,11 +59,7 @@ export interface Jetstream {
  */
 export const tag = Context.GenericTag<Jetstream>("effect-jetstream/Jetstream")
 
-const reconnectSchedule = Schedule.exponential("1 second").pipe(
-  Schedule.union(Schedule.spaced("30 seconds"))
-)
-
-const outboundBufferSize = 1024
+type IngressChunk = string | Uint8Array
 
 type OutboundMessage = {
   readonly message: SubscriberSourcedMessage
@@ -94,17 +90,74 @@ type ResolvedDecoder = {
   readonly usingDefaultDecoder: boolean
 }
 
+type ReconnectScheduleConfig = Pick<
+  JetstreamConfig,
+  "reconnectBaseDelayMs" | "reconnectMaxDelayMs" | "reconnectJitterFactor"
+>
+
+const makeReconnectSchedule = (config: ReconnectScheduleConfig) => {
+  const capped = Schedule.exponential(config.reconnectBaseDelayMs).pipe(
+    Schedule.union(Schedule.spaced(config.reconnectMaxDelayMs))
+  )
+  if (config.reconnectJitterFactor <= 0) {
+    return capped
+  }
+  const min = Math.max(0, 1 - config.reconnectJitterFactor)
+  const max = 1 + config.reconnectJitterFactor
+  return capped.pipe(
+    Schedule.jitteredWith({ min, max })
+  )
+}
+
+const makeQueue = <A>(
+  capacity: number,
+  strategy: "suspend" | "dropping" | "sliding"
+): Effect.Effect<Queue.Queue<A>> => {
+  switch (strategy) {
+    case "dropping":
+      return Queue.dropping(capacity)
+    case "sliding":
+      return Queue.sliding(capacity)
+    case "suspend":
+      return Queue.bounded(capacity)
+  }
+}
+
+const ingressChunkType = (data: IngressChunk): "text" | "binary" =>
+  typeof data === "string" ? "text" : "binary"
+
+const ingressChunkSize = (data: IngressChunk): number =>
+  typeof data === "string" ? data.length : data.byteLength
+
+const isPromiseLike = (value: unknown): value is PromiseLike<Uint8Array> =>
+  typeof value === "object" &&
+  value !== null &&
+  "then" in value &&
+  typeof (value as { readonly then?: unknown }).then === "function"
+
+const zstdDecodeError = (error: unknown) =>
+  new ParseError({
+    message: `Zstd decompression failed: ${String(error)}`
+  })
+
 const makeDefaultZstdDecoder = (
   zstdDecompress: NonNullable<BunRuntime["zstdDecompress"]>
-): JetstreamDecoder =>
-  (data) =>
-    Effect.tryPromise({
-      try: () => Promise.resolve(zstdDecompress(data)),
-      catch: (error) =>
-        new ParseError({
-          message: `Zstd decompression failed: ${String(error)}`
-        })
+): JetstreamDecoder => {
+  return (data) =>
+    Effect.gen(function* () {
+      const decoded = yield* Effect.try({
+        try: () => zstdDecompress(data),
+        catch: zstdDecodeError
+      })
+      if (!isPromiseLike(decoded)) {
+        return decoded
+      }
+      return yield* Effect.tryPromise({
+        try: () => Promise.resolve(decoded),
+        catch: zstdDecodeError
+      })
     })
+}
 
 const resolveDecoder = (config: JetstreamConfig): Effect.Effect<ResolvedDecoder, ParseError> => {
   if (!config.compress) {
@@ -147,21 +200,56 @@ export const layer = (
         capacity: config.inboundBufferSize,
         strategy: config.inboundBufferStrategy
       })
-      const outbound = yield* Queue.bounded<OutboundMessage>(outboundBufferSize)
+      const ingress = yield* makeQueue<IngressChunk>(
+        config.ingressBufferSize,
+        config.ingressBufferStrategy
+      )
+      const outbound = yield* Queue.bounded<OutboundMessage>(config.outboundBufferSize)
       const pending = yield* Ref.make<Option.Option<OutboundMessage>>(Option.none())
       const shutdownSignal = yield* Deferred.make<void>()
       const { decoder, usingDefaultDecoder } = yield* resolveDecoder(config)
+      const reconnectSchedule = makeReconnectSchedule(config)
       const now = () => Date.now()
+      const runtimeObserver = config.runtimeObserver
+      const runtimeEvents = runtimeObserver === undefined
+        ? Option.none<Queue.Queue<JetstreamRuntimeEvent>>()
+        : Option.some(
+          yield* Queue.dropping<JetstreamRuntimeEvent>(config.runtimeObserverBufferSize)
+        )
       const emitRuntimeEvent = Effect.fn("Jetstream.emitRuntimeEvent")(
         (event: JetstreamRuntimeEvent): Effect.Effect<void> =>
-          config.runtimeObserver === undefined
+          Option.isNone(runtimeEvents)
             ? Effect.void
-            : config.runtimeObserver(event).pipe(
-              Effect.catchAllCause(() => Effect.void),
-              Effect.forkDaemon,
-              Effect.asVoid
+            : runtimeEvents.value.offer(event).pipe(
+              Effect.flatMap((accepted) =>
+                accepted
+                  ? Effect.void
+                  : Effect.logDebug("Dropping runtime event because observer queue is full", {
+                    event: event._tag
+                  })
+              ),
+              Effect.catchAllCause(() => Effect.void)
             )
       )
+      if (Option.isSome(runtimeEvents)) {
+        const runtimeObserverFiber = yield* Effect.forkIn(
+          Queue.take(runtimeEvents.value).pipe(
+            Effect.flatMap((event) =>
+              runtimeObserver!(event).pipe(
+                Effect.catchAllCause(() => Effect.void)
+              )
+            ),
+            Effect.forever,
+            Effect.catchAllCause((cause) =>
+              Cause.isInterrupted(cause)
+                ? Effect.void
+                : Effect.failCause(cause)
+            )
+          ),
+          scope
+        )
+        void runtimeObserverFiber
+      }
 
       if (usingDefaultDecoder) {
         yield* Effect.logWarning(
@@ -183,8 +271,8 @@ export const layer = (
           )
         )
 
-      const handleIncoming = Effect.fn("Jetstream.handleIncoming")(
-        (data: string | Uint8Array) =>
+      const processIngressChunk = Effect.fn("Jetstream.processIngressChunk")(
+        (data: IngressChunk) =>
           decodeMessage(data, decoder).pipe(
             Effect.flatMap((message) =>
               mailbox.offer(message).pipe(
@@ -209,6 +297,34 @@ export const layer = (
             ),
             Effect.catchAll(logDecodeError)
           )
+      )
+
+      const enqueueIngressChunk = Effect.fn("Jetstream.enqueueIngressChunk")(
+        (data: IngressChunk): Effect.Effect<void> =>
+          ingress.offer(data).pipe(
+            Effect.flatMap((accepted) =>
+              accepted
+                ? Effect.void
+                : emitRuntimeEvent({
+                  _tag: "IngressDropped",
+                  timestampMs: now(),
+                  sizeBytes: ingressChunkSize(data),
+                  chunkType: ingressChunkType(data)
+                }).pipe(
+                  Effect.zipRight(
+                    Effect.logDebug("Dropping inbound frame because ingress queue is full", {
+                      sizeBytes: ingressChunkSize(data),
+                      chunkType: ingressChunkType(data)
+                    })
+                  )
+                )
+            )
+          )
+      )
+
+      const ingressLoop = Queue.take(ingress).pipe(
+        Effect.flatMap(processIngressChunk),
+        Effect.forever
       )
 
       const takeNextOutbound = Effect.uninterruptibleMask((restore) =>
@@ -269,7 +385,7 @@ export const layer = (
         writeOne(writer).pipe(Effect.forever)
 
       const readLoop = (socket: Socket.Socket) =>
-        socket.runRaw((data) => handleIncoming(data)).pipe(
+        socket.runRaw((data) => enqueueIngressChunk(data)).pipe(
           Effect.catchAll((cause) => Effect.fail(new ConnectionError({ reason: "Closed", cause }))),
           Effect.zipRight(Effect.fail(new ConnectionError({ reason: "Closed", cause: "Socket closed" })))
         )
@@ -315,6 +431,7 @@ export const layer = (
         )
       )
 
+      const ingressFiber = yield* Effect.forkIn(ingressLoop, scope)
       const connectionFiber = yield* Effect.forkIn(runConnectionUntilShutdown, scope)
 
       const shutdown = Effect.uninterruptible(
@@ -325,6 +442,7 @@ export const layer = (
           })
           yield* Deferred.succeed(shutdownSignal, undefined)
           yield* Fiber.interrupt(connectionFiber)
+          yield* Fiber.interrupt(ingressFiber)
           const closed = new ConnectionError({
             reason: "Closed",
             cause: "Jetstream shutdown"
@@ -338,6 +456,10 @@ export const layer = (
           for (const item of remaining) {
             yield* Deferred.fail(item.done, closed)
           }
+          if (Option.isSome(runtimeEvents)) {
+            yield* runtimeEvents.value.shutdown
+          }
+          yield* ingress.shutdown
           yield* mailbox.end
         })
       )
@@ -347,10 +469,6 @@ export const layer = (
       const send = Effect.fn("Jetstream.send")(
         (message: SubscriberSourcedMessage): Effect.Effect<void, JetstreamError> =>
           Effect.gen(function* () {
-            const isShutdown = yield* Deferred.isDone(shutdownSignal)
-            if (isShutdown) {
-              return yield* Effect.fail(new ConnectionError({ reason: "Closed", cause: "Jetstream shutdown" }))
-            }
             const done = yield* Deferred.make<void, JetstreamError>()
             const accepted = yield* Effect.raceFirst(
               Queue.offer(outbound, { message, done }),

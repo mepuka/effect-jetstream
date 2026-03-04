@@ -119,6 +119,32 @@ describe("jetstream", () => {
     expect(result.sent2).toBe(1)
   })
 
+  test("honors custom reconnect delay", async () => {
+    const config = JetstreamConfig.make({
+      reconnectBaseDelayMs: 2000,
+      reconnectMaxDelayMs: 2000
+    })
+    const program = Effect.gen(function* () {
+      const jetstream = yield* JetstreamTag
+      const factory = yield* FakeWebSocketFactory
+      const socket1 = yield* factory.take
+      socket1.emitError(new Error("boom"))
+      yield* TestClock.adjust("1 second")
+      const socketsAfterOneSecond = Chunk.toReadonlyArray(yield* factory.takeAll)
+      yield* TestClock.adjust("1 second")
+      const socket2 = yield* factory.take
+      yield* jetstream.shutdown
+      return {
+        socketsAfterOneSecond,
+        hasReconnect: socket2 !== undefined
+      }
+    }).pipe(Effect.provide(makeLayer(config)))
+
+    const result = await Effect.runPromise(program)
+    expect(result.socketsAfterOneSecond).toHaveLength(0)
+    expect(result.hasReconnect).toBe(true)
+  })
+
   test("shutdown ends the stream", async () => {
     const config = JetstreamConfig.make({})
     const program = Effect.gen(function* () {
@@ -274,6 +300,42 @@ describe("jetstream", () => {
 
     const runtimeEvents = await Effect.runPromise(program)
     expect(runtimeEvents.some((event) => event._tag === "InboundDropped")).toBe(true)
+  })
+
+  test("emits IngressDropped runtime events when ingress queue is full", async () => {
+    const events: Array<JetstreamRuntimeEvent> = []
+    const config = JetstreamConfig.make({
+      inboundBufferSize: 1,
+      inboundBufferStrategy: "suspend",
+      ingressBufferSize: 1,
+      ingressBufferStrategy: "dropping",
+      runtimeObserver: (event) => Effect.sync(() => {
+        events.push(event)
+      })
+    })
+    const program = Effect.gen(function* () {
+      const jetstream = yield* JetstreamTag
+      const factory = yield* FakeWebSocketFactory
+      const socket = yield* factory.take
+      socket.open()
+      socket.emitMessage(commitDeleteMessage)
+      socket.emitMessage(commitDeleteMessage)
+      socket.emitMessage(commitDeleteMessage)
+      socket.emitMessage(commitDeleteMessage)
+      yield* Effect.yieldNow()
+      yield* Effect.yieldNow()
+      yield* Effect.yieldNow()
+      yield* jetstream.shutdown
+      return events
+    }).pipe(Effect.provide(makeLayer(config)))
+
+    const runtimeEvents = await Effect.runPromise(program)
+    const ingressDropped = runtimeEvents.find((event) => event._tag === "IngressDropped")
+    expect(ingressDropped).toBeDefined()
+    if (ingressDropped?._tag === "IngressDropped") {
+      expect(ingressDropped.sizeBytes).toBeGreaterThan(0)
+      expect(ingressDropped.chunkType).toBe("text")
+    }
   })
 
   test("emits ConnectionAttempt and ConnectionClosed runtime events", async () => {

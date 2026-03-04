@@ -44,6 +44,12 @@ export type JetstreamRuntimeEvent =
       readonly did: string
     }
   | {
+      readonly _tag: "IngressDropped"
+      readonly timestampMs: number
+      readonly sizeBytes: number
+      readonly chunkType: "text" | "binary"
+    }
+  | {
       readonly _tag: "OutboundQueued"
       readonly timestampMs: number
     }
@@ -79,6 +85,17 @@ const JetstreamRuntimeObserverSchema = Schema.declare<JetstreamRuntimeObserver>(
   (u): u is JetstreamRuntimeObserver => typeof u === "function"
 )
 
+const PositiveInteger = Schema.Number.pipe(
+  Schema.finite(),
+  Schema.int(),
+  Schema.greaterThan(0)
+)
+
+const JitterFactor = Schema.Number.pipe(
+  Schema.finite(),
+  Schema.between(0, 1)
+)
+
 /**
  * @since 1.0.0
  * @category schemas
@@ -102,6 +119,16 @@ export class JetstreamConfig extends Schema.Class<JetstreamConfig>("JetstreamCon
     Schema.Literal("suspend", "dropping", "sliding"),
     { default: () => "suspend" }
   ),
+  ingressBufferSize: Schema.optionalWith(Schema.Number, { default: () => 4096 }),
+  ingressBufferStrategy: Schema.optionalWith(
+    Schema.Literal("suspend", "dropping", "sliding"),
+    { default: () => "dropping" }
+  ),
+  outboundBufferSize: Schema.optionalWith(PositiveInteger, { default: () => 1024 }),
+  reconnectBaseDelayMs: Schema.optionalWith(PositiveInteger, { default: () => 1000 }),
+  reconnectMaxDelayMs: Schema.optionalWith(PositiveInteger, { default: () => 30000 }),
+  reconnectJitterFactor: Schema.optionalWith(JitterFactor, { default: () => 0 }),
+  runtimeObserverBufferSize: Schema.optionalWith(Schema.Number, { default: () => 1024 }),
   runtimeObserver: Schema.optional(JetstreamRuntimeObserverSchema)
 }) {}
 

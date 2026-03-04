@@ -75,6 +75,21 @@ export const tag = Context.GenericTag<JetstreamClient>("effect-jetstream/Jetstre
 
 type Handler = (event: JetstreamMessage) => Effect.Effect<void>
 
+const decodeFailureSentinel = Symbol.for("effect-jetstream/JetstreamClient/decode-failed")
+
+type DecodedCreateEvent = CommitCreate & {
+  readonly commit: { readonly record: unknown }
+}
+
+type DecodedUpdateEvent = CommitUpdate & {
+  readonly commit: { readonly record: unknown }
+}
+
+type DecodeCache = {
+  create?: DecodedCreateEvent | typeof decodeFailureSentinel
+  update?: DecodedUpdateEvent | typeof decodeFailureSentinel
+}
+
 const recordSchemas = {
   "app.bsky.feed.post": Post,
   "app.bsky.feed.like": Like,
@@ -135,6 +150,17 @@ export const layer: Layer.Layer<JetstreamClient, never, Jetstream> = Layer.effec
   Effect.gen(function* () {
     const jetstream = yield* JetstreamTag
     const handlers = yield* Ref.make<ReadonlyArray<Handler>>([])
+    const decodeCache = new WeakMap<JetstreamMessage, DecodeCache>()
+
+    const decodeCacheFor = (event: JetstreamMessage): DecodeCache => {
+      const cached = decodeCache.get(event)
+      if (cached !== undefined) {
+        return cached
+      }
+      const next: DecodeCache = {}
+      decodeCache.set(event, next)
+      return next
+    }
 
     const addHandler = (handler: Handler): Effect.Effect<void> =>
       Ref.update(handlers, (current) => [...current, handler])
@@ -148,17 +174,34 @@ export const layer: Layer.Layer<JetstreamClient, never, Jetstream> = Layer.effec
           if (event._tag !== "CommitCreate" || event.commit.collection !== collection) {
             return Effect.void
           }
+          const cache = decodeCacheFor(event)
+          if (cache.create === decodeFailureSentinel) {
+            return Effect.void
+          }
+          if (cache.create !== undefined) {
+            return handler(cache.create as CommitCreate & { readonly commit: { readonly record: RecordFor<C> } }).pipe(
+              Effect.catchAllCause(logHandlerFailure("onCreate", event))
+            )
+          }
           return decodeRecord(collection, event.commit.record).pipe(
             Effect.matchEffect({
-              onFailure: (error) => logRecordFailure(collection, error, event),
-              onSuccess: (record) =>
-                handler({
+              onFailure: (error) =>
+                Effect.sync(() => {
+                  cache.create = decodeFailureSentinel
+                }).pipe(Effect.zipRight(logRecordFailure(collection, error, event))),
+              onSuccess: (record) => {
+                const decodedEvent: DecodedCreateEvent = {
                   ...event,
                   commit: {
                     ...event.commit,
                     record
                   }
-                }).pipe(Effect.catchAllCause(logHandlerFailure("onCreate", event)))
+                }
+                cache.create = decodedEvent
+                return handler(decodedEvent as CommitCreate & { readonly commit: { readonly record: RecordFor<C> } }).pipe(
+                  Effect.catchAllCause(logHandlerFailure("onCreate", event))
+                )
+              }
             })
           )
         })
@@ -173,17 +216,34 @@ export const layer: Layer.Layer<JetstreamClient, never, Jetstream> = Layer.effec
           if (event._tag !== "CommitUpdate" || event.commit.collection !== collection) {
             return Effect.void
           }
+          const cache = decodeCacheFor(event)
+          if (cache.update === decodeFailureSentinel) {
+            return Effect.void
+          }
+          if (cache.update !== undefined) {
+            return handler(cache.update as CommitUpdate & { readonly commit: { readonly record: RecordFor<C> } }).pipe(
+              Effect.catchAllCause(logHandlerFailure("onUpdate", event))
+            )
+          }
           return decodeRecord(collection, event.commit.record).pipe(
             Effect.matchEffect({
-              onFailure: (error) => logRecordFailure(collection, error, event),
-              onSuccess: (record) =>
-                handler({
+              onFailure: (error) =>
+                Effect.sync(() => {
+                  cache.update = decodeFailureSentinel
+                }).pipe(Effect.zipRight(logRecordFailure(collection, error, event))),
+              onSuccess: (record) => {
+                const decodedEvent: DecodedUpdateEvent = {
                   ...event,
                   commit: {
                     ...event.commit,
                     record
                   }
-                }).pipe(Effect.catchAllCause(logHandlerFailure("onUpdate", event)))
+                }
+                cache.update = decodedEvent
+                return handler(decodedEvent as CommitUpdate & { readonly commit: { readonly record: RecordFor<C> } }).pipe(
+                  Effect.catchAllCause(logHandlerFailure("onUpdate", event))
+                )
+              }
             })
           )
         })

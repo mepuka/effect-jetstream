@@ -12,6 +12,7 @@ export interface HarnessMetrics {
   readonly eventKind: Metric.Metric.Frequency<string>
   readonly decodeErrorsTotal: Metric.Metric.Counter<number>
   readonly inboundDropsTotal: Metric.Metric.Counter<number>
+  readonly ingressDropsTotal: Metric.Metric.Counter<number>
   readonly reconnectsTotal: Metric.Metric.Counter<number>
   readonly outboundEncodeFailuresTotal: Metric.Metric.Counter<number>
   readonly outboundSendFailuresTotal: Metric.Metric.Counter<number>
@@ -34,6 +35,8 @@ export interface HarnessReport {
     readonly events: number
     readonly decodeErrors: number
     readonly inboundDrops: number
+    readonly mailboxDrops: number
+    readonly ingressDrops: number
     readonly reconnects: number
     readonly outboundEncodeFailures: number
     readonly outboundSendFailures: number
@@ -95,6 +98,10 @@ export const createHarnessMetrics = Effect.fn("Harness.createMetrics")(
         Metric.counter("harness_inbound_drops_total", { incremental: true }),
         runId
       ).register()
+      const ingressDropsTotal = withRunId(
+        Metric.counter("harness_ingress_drops_total", { incremental: true }),
+        runId
+      ).register()
       const reconnectsTotal = withRunId(
         Metric.counter("harness_reconnects_total", { incremental: true }),
         runId
@@ -137,6 +144,7 @@ export const createHarnessMetrics = Effect.fn("Harness.createMetrics")(
         eventKind,
         decodeErrorsTotal,
         inboundDropsTotal,
+        ingressDropsTotal,
         reconnectsTotal,
         outboundEncodeFailuresTotal,
         outboundSendFailuresTotal,
@@ -172,6 +180,9 @@ export const recordRuntimeEvent = Effect.fn("Harness.recordRuntimeEvent")(
           break
         case "InboundDropped":
           yield* Metric.increment(metrics.inboundDropsTotal)
+          break
+        case "IngressDropped":
+          yield* Metric.increment(metrics.ingressDropsTotal)
           break
         case "OutboundEncodeFailed":
           yield* Metric.increment(metrics.outboundEncodeFailuresTotal)
@@ -217,7 +228,8 @@ export const collectHarnessReport = Effect.fn("Harness.collectReport")(
       const [
         events,
         decodeErrors,
-        inboundDrops,
+        mailboxDrops,
+        ingressDrops,
         reconnects,
         outboundEncodeFailures,
         outboundSendFailures,
@@ -229,6 +241,7 @@ export const collectHarnessReport = Effect.fn("Harness.collectReport")(
         readCounter(metrics.eventsTotal),
         readCounter(metrics.decodeErrorsTotal),
         readCounter(metrics.inboundDropsTotal),
+        readCounter(metrics.ingressDropsTotal),
         readCounter(metrics.reconnectsTotal),
         readCounter(metrics.outboundEncodeFailuresTotal),
         readCounter(metrics.outboundSendFailuresTotal),
@@ -239,6 +252,7 @@ export const collectHarnessReport = Effect.fn("Harness.collectReport")(
       ])
 
       const avgEventsPerSec = runtime > 0 ? events / runtime : 0
+      const inboundDrops = mailboxDrops + ingressDrops
       const eventKinds = Object.fromEntries(eventKindsState.occurrences.entries())
 
       return {
@@ -251,6 +265,8 @@ export const collectHarnessReport = Effect.fn("Harness.collectReport")(
           events,
           decodeErrors,
           inboundDrops,
+          mailboxDrops,
+          ingressDrops,
           reconnects,
           outboundEncodeFailures,
           outboundSendFailures

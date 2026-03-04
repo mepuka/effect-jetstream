@@ -99,11 +99,8 @@ export const decodeMessage = (
         }))
       }
       const { commit } = raw
-      const base = {
-        did: raw.did,
-        time_us: raw.time_us,
-        kind: "commit" as const
-      }
+      const did = raw.did
+      const time_us = raw.time_us
 
       switch (commit.operation) {
         case "create":
@@ -114,7 +111,9 @@ export const decodeMessage = (
             }))
           }
           return new CommitCreate({
-            ...base,
+            did,
+            time_us,
+            kind: "commit",
             commit: {
               rev: commit.rev,
               operation: "create",
@@ -132,7 +131,9 @@ export const decodeMessage = (
             }))
           }
           return new CommitUpdate({
-            ...base,
+            did,
+            time_us,
+            kind: "commit",
             commit: {
               rev: commit.rev,
               operation: "update",
@@ -144,7 +145,9 @@ export const decodeMessage = (
           })
         case "delete":
           return new CommitDelete({
-            ...base,
+            did,
+            time_us,
+            kind: "commit",
             commit: {
               rev: commit.rev,
               operation: "delete",

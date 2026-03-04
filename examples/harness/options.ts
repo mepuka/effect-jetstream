@@ -37,7 +37,8 @@ export class HarnessOptions extends Schema.Class<HarnessOptions>("HarnessOptions
   gateMaxDecodeErrors: Schema.optional(NonNegativeInteger),
   gateMaxInboundDrops: Schema.optional(NonNegativeInteger),
   gateMaxReconnects: Schema.optional(NonNegativeInteger),
-  gateMaxP95LagMs: Schema.optional(NonNegativeNumber)
+  gateMaxP95LagMs: Schema.optional(NonNegativeNumber),
+  gateMaxP99LagMs: Schema.optional(NonNegativeNumber)
 }) {}
 
 type CliArgs = Record<string, string | true>
@@ -103,7 +104,8 @@ const toRawOptions = (args: CliArgs): Record<string, unknown> => ({
   gateMaxDecodeErrors: asNumber(args.gateMaxDecodeErrors),
   gateMaxInboundDrops: asNumber(args.gateMaxInboundDrops),
   gateMaxReconnects: asNumber(args.gateMaxReconnects),
-  gateMaxP95LagMs: asNumber(args.gateMaxP95LagMs)
+  gateMaxP95LagMs: asNumber(args.gateMaxP95LagMs),
+  gateMaxP99LagMs: asNumber(args.gateMaxP99LagMs)
 })
 
 const decodeHarnessOptions = Schema.decodeUnknown(HarnessOptions)

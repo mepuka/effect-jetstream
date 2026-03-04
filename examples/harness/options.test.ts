@@ -32,7 +32,8 @@ describe("harness options", () => {
       "--gateMaxDecodeErrors", "2",
       "--gateMaxInboundDrops", "3",
       "--gateMaxReconnects", "4",
-      "--gateMaxP95LagMs", "500"
+      "--gateMaxP95LagMs", "500",
+      "--gateMaxP99LagMs", "900"
     ]))
 
     expect(options.mode).toBe("replay")
@@ -47,6 +48,7 @@ describe("harness options", () => {
     expect(options.gateMaxInboundDrops).toBe(3)
     expect(options.gateMaxReconnects).toBe(4)
     expect(options.gateMaxP95LagMs).toBe(500)
+    expect(options.gateMaxP99LagMs).toBe(900)
   })
 
   test("fails on invalid mode", async () => {

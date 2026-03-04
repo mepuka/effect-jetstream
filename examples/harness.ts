@@ -3,6 +3,7 @@ import { dirname } from "node:path"
 import * as Cause from "effect/Cause"
 import * as Effect from "effect/Effect"
 import * as Exit from "effect/Exit"
+import * as Fiber from "effect/Fiber"
 import * as Option from "effect/Option"
 import { evaluateGates } from "./harness/gates.js"
 import {
@@ -53,6 +54,8 @@ const program = Effect.scoped(
       yield* runReplayHarness(options, metrics)
     }
 
+    yield* Fiber.interrupt(reporterFiber)
+
     const report = yield* collectHarnessReport(metrics, options.mode, Date.now())
     const gates = evaluateGates(report, options)
 
@@ -76,7 +79,8 @@ const program = Effect.scoped(
         gateMaxDecodeErrors: options.gateMaxDecodeErrors,
         gateMaxInboundDrops: options.gateMaxInboundDrops,
         gateMaxReconnects: options.gateMaxReconnects,
-        gateMaxP95LagMs: options.gateMaxP95LagMs
+        gateMaxP95LagMs: options.gateMaxP95LagMs,
+        gateMaxP99LagMs: options.gateMaxP99LagMs
       }
     }
 
@@ -114,6 +118,7 @@ type HarnessOptionsSummary = {
   readonly gateMaxInboundDrops?: number
   readonly gateMaxReconnects?: number
   readonly gateMaxP95LagMs?: number
+  readonly gateMaxP99LagMs?: number
 }
 
 void Effect.runPromiseExit(program).then((exit) => {

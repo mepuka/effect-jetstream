@@ -50,12 +50,24 @@ export const evaluateGates = (
     }
   }
 
+  if (isDefined(options.gateMaxP99LagMs)) {
+    const p99 = report.lagMs.p99
+    if (p99 === null) {
+      violations.push("p99 lag is unavailable")
+    } else if (p99 > options.gateMaxP99LagMs) {
+      violations.push(
+        `p99 lag ${p99.toFixed(2)}ms exceeds maximum ${options.gateMaxP99LagMs.toFixed(2)}ms`
+      )
+    }
+  }
+
   const configured =
     isDefined(options.gateMinEventsPerSec) ||
     isDefined(options.gateMaxDecodeErrors) ||
     isDefined(options.gateMaxInboundDrops) ||
     isDefined(options.gateMaxReconnects) ||
-    isDefined(options.gateMaxP95LagMs)
+    isDefined(options.gateMaxP95LagMs) ||
+    isDefined(options.gateMaxP99LagMs)
 
   return {
     configured,
