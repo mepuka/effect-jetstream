@@ -1,5 +1,17 @@
 # effect-jetstream
 
+## 1.2.0
+
+### Minor Changes
+
+- Improve runtime throughput and observability with configurable buffering and reconnect behavior.
+
+  - Add ingress buffering controls and runtime drop visibility (`IngressDropped`) to protect decode/stream delivery under burst load.
+  - Add runtime observer queue buffering to prevent observer backpressure from affecting message processing.
+  - Add outbound/reconnect tuning (`outboundBufferSize`, reconnect delays, jitter) for production stability tuning.
+  - Improve client dispatch efficiency by reusing decoded record payloads across handlers for the same event.
+  - Expand benchmark/harness tooling with replay/pipeline matrix scenarios and richer drop attribution metrics.
+
 ## 1.1.0
 
 ### Minor Changes
